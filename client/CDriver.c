@@ -1,9 +1,17 @@
 #include "CDriver.h"
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <time.h>
 #define PI 3.141592654
 
+
+#ifdef REVERSE
+#define TURNF 0
+#define TURNB 1
+#define GO 2
+#endif
+int revStartState;
 
 /* Gear Changing Constants*/
 const int gearUp[6] =
@@ -27,8 +35,16 @@ const float cos5 = 0.99619;
 
 /* Steering constants*/
 const float steerLock = 0.785398;
-const float steerSensitivityOffset = 120.0;
 const float wheelSensitivityCoeff = 1;
+
+#ifndef REVERSE
+const float steerSensitivityOffset = 120.0;
+#endif // REVERSE
+
+#ifdef REVERSE
+const float steerSensitivityOffset = 30.0;
+#endif // REVERSE
+
 
 /* ABS Filter Constants */
 const float wheelRadius[4] = { 0.3179,0.3179,0.3276,0.3276 };
@@ -92,6 +108,8 @@ int compare(const void* a, const void* b)
 {
     return (*(float*)a - *(float*)b);
 }
+
+
 
 void inputProcessor(structCarState* cs)
 {
@@ -171,6 +189,7 @@ void inputProcessor(structCarState* cs)
         TurnData.angle = asin(sinAngle);
         TurnData.direction = LEFT;
     }
+                                   
 }
 
 float indexRangeToAngle(const int idxStart, const int identCount)
@@ -514,9 +533,81 @@ float getAccel(structCarState* cs)
 
 }
 
+
+int getGearR(structCarState* cs)
+{
+    return -1;
+}
+
+float getSteerR(structCarState* cs)
+{
+    float angle;
+    if (cs->angle < 0)
+        angle = cs->angle + PI;
+    else
+        angle = cs->angle - PI;
+    // steering angle is compute by correcting the actual car angle w.r.t. to track 
+    // axis [cs->angle] and to adjust car position w.r.t to middle of track [cs->trackPos*0.5]
+    float targetAngle = (angle - cs->trackPos * 0.5);
+    // at high speed reduce the steering command to avoid loosing the control
+    //if (-cs->speedX > steerSensitivityOffset)
+    //    return targetAngle / (steerLock * (-cs->speedX - steerSensitivityOffset) * wheelSensitivityCoeff);
+    //else
+    return (targetAngle) / steerLock;
+
+}
+
+float getAccelR(structCarState* cs)
+{
+    // checks if car is out of track
+    if (cs->trackPos < 1 && cs->trackPos > -1)
+    {
+        // reading of sensor at +5 degree w.r.t. car axis
+        float rxSensor = cs->track[10];
+        // reading of sensor parallel to car axis
+        float cSensor = cs->track[9];
+        // reading of sensor at -5 degree w.r.t. car axis
+        float sxSensor = cs->track[8];
+
+        float targetSpeed;
+
+        // track is straight and enough far from a turn so goes to max speed
+        if (cSensor > maxSpeedDist || (cSensor >= rxSensor && cSensor >= sxSensor))
+            targetSpeed = maxSpeed;
+        else
+        {
+            // approaching a turn on right
+            if (rxSensor > sxSensor)
+            {
+                // computing approximately the "angle" of turn
+                float h = cSensor * sin5;
+                float b = rxSensor - cSensor * cos5;
+                float sinAngle = b * b / (h * h + b * b);
+                // estimate the target speed depending on turn and on how close it is
+                targetSpeed = maxSpeed * (cSensor * sinAngle / maxSpeedDist);
+            }
+            // approaching a turn on left
+            else
+            {
+                // computing approximately the "angle" of turn
+                float h = cSensor * sin5;
+                float b = sxSensor - cSensor * cos5;
+                float sinAngle = b * b / (h * h + b * b);
+                // estimate the target speed depending on turn and on how close it is
+                targetSpeed = maxSpeed * (cSensor * sinAngle / maxSpeedDist);
+            }
+
+        }
+        double xSpeed = -cs->speedX;
+        // accel/brake command is expontially scaled w.r.t. the difference between target speed and current one
+        return 2 / (1 + exp(xSpeed - targetSpeed)) - 1;
+    }
+    else
+        return 0.3; // when out of track returns a moderate acceleration command
+
+}
+
 int a = 0;
-int lps = 0;
-int clapTime = 0;
 structCarControl CDrive(structCarState cs)
 {
     if (a == 0)
@@ -525,20 +616,46 @@ structCarControl CDrive(structCarState cs)
         srand(time(0));
     }
 
-    if (clapTime > cs.curLapTime + 3)
-    {
-        lps++;
-    }
-    clapTime = cs.curLapTime;
-
-    if (lps == 3)
-        enableScaredSteering = 0;
-
     inputProcessor(&cs);
     if (cs.stage != cs.prevStage)
     {
         cs.prevStage = cs.stage;
     }
+
+#ifdef REVERSE
+    if (revStartState != GO) {
+        float steer, brk;
+        int gear;
+        if (revStartState == TURNF) {
+            steer = -1;
+            gear = 1;
+            brk = 0.;
+            if (cs.angle >= PI / 2 || cs.track[9] < 0.5) {
+                revStartState = TURNB;
+                brk = 1.;
+            }
+
+        }
+        else { //TURNB
+            steer = 1;
+            gear = -1;
+            brk = 0.;
+            if (abs(cs.angle) > 9 * PI / 10) {
+                revStartState = GO;
+                brk = 1.;
+            }
+        }
+        // Calculate clutching
+        clutching(&cs, &clutch);
+
+        structCarControl cc = { 0.1f,brk,gear,steer,clutch };
+        return cc;
+    }
+#endif // REVERSE
+
+
+
+#ifndef REVERSE
     // check if car is currently stuck
     if (fabs(cs.angle) > stuckAngle)
     {
@@ -550,15 +667,25 @@ structCarControl CDrive(structCarState cs)
         // if not stuck reset stuck counter
         stuck = 0;
     }
-
+   
     // after car is stuck for a while apply recovering policy
     if (stuck > stuckTime)
     {
         /* set gear and sterring command assuming car is
          * pointing in a direction out of track */
-
+        static float lastAngle = 0;
+        static int steercucc = 1;
          // to bring car parallel to track axis
         float steer = cs.angle / steerLock;
+        if (fabs(cs.angle) > PI / 2 && steercucc == 1)
+            steercucc = - 1;
+        else if (fabs(cs.angle) < PI / 2 && steercucc == -1)
+            steercucc = 1;
+
+        steer *= steercucc;
+
+        lastAngle = cs.angle;
+
         int gear = -1; // gear R
 
         // if car is pointing in the correct direction revert gear and steer  
@@ -572,19 +699,32 @@ structCarControl CDrive(structCarState cs)
         clutching(&cs, &clutch);
 
         // build a CarControl variable and return it
-        structCarControl cc = { 1.0f,0.0f,gear,steer,clutch };
+        structCarControl cc = { 0.25f,0.0f,gear,steer,clutch };
         return cc;
     }
 
     else // car is not stuck
+#endif // !REVERSE
     {
+
+
+#ifndef REVERSE
         // compute accel/brake command
         float accel_and_brake = getAccel(&cs);
         // compute gear 
         int gear = getGear(&cs);
         // compute steering
         float steer = getSteer(&cs);
+#endif // !REVERSE
 
+#ifdef REVERSE
+        // compute accel/brake command
+        float accel_and_brake = getAccelR(&cs);
+        // compute gear 
+        int gear = getGearR(&cs);
+        // compute steering
+        float steer = -1 * getSteerR(&cs);
+#endif // !REVERSE
 
         // normalize steering
         if (steer < -1)
@@ -614,6 +754,7 @@ structCarControl CDrive(structCarState cs)
         return cc;
     }
 }
+
 
 float filterABS(structCarState* cs, float brake)
 {
