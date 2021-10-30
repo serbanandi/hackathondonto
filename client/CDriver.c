@@ -673,18 +673,8 @@ structCarControl CDrive(structCarState cs)
     {
         /* set gear and sterring command assuming car is
          * pointing in a direction out of track */
-        static float lastAngle = 0;
-        static int steercucc = 1;
          // to bring car parallel to track axis
         float steer = cs.angle / steerLock;
-        if (fabs(cs.angle) > PI / 2 && steercucc == 1)
-            steercucc = - 1;
-        else if (fabs(cs.angle) < PI / 2 && steercucc == -1)
-            steercucc = 1;
-
-        steer *= steercucc;
-
-        lastAngle = cs.angle;
 
         int gear = -1; // gear R
 
