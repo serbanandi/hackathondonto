@@ -521,7 +521,7 @@ float getAccel(structCarState* cs)
         
 
 
-        printf("\rctr: %lf err: %lf SP: %lf TS: %d TP: %d||| P[%lf] I[%lf] D[%lf]", control, error, setPoint, TurnState, TurnPrep, error * pgain, integ * igain, dcontrol);
+        //printf("\rctr: %lf err: %lf SP: %lf TS: %d TP: %d||| P[%lf] I[%lf] D[%lf]", control, error, setPoint, TurnState, TurnPrep, error * pgain, integ * igain, dcontrol);
 
         lerror = error;
 
